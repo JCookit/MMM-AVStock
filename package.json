@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "alphavantage": "^2.4.1",
-    "highcharts": "^9.0.0",
+    "moment": "^2.29.4",
     "yahoo-finance2": "^2.11.3"
   }
 }

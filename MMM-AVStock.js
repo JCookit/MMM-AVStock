@@ -5,7 +5,7 @@ Module.register("MMM-AVStock", {
         symbols : ["AAPL", "GOOGL", "TSLA"],
         alias: [],
         width: null,
-        height: 200,
+        height: 400,
         direction: 'row',
         classes: 'xsmall',
         callInterval: 1000*2*60,
@@ -37,7 +37,7 @@ Module.register("MMM-AVStock", {
         decimals : 2,
         activeHours: [8, 22],
         chartType: 'line',
-        chartUpdateInterval: 30*1000,
+        chartUpdateInterval: 5*1000,
         alternateGridColor: '#223344',
         pureLine: false,
         chartNavigator: false,
@@ -48,11 +48,30 @@ Module.register("MMM-AVStock", {
         showPurchasePrices: false,
         showPerformance2Purchase: false,
         debug: false,
+        // Chart.js configuration options (similar to MMM-WeatherChart)
+        chartjsVersion: "3.9.1",
+        chartjsFinancialVersion: "0.2.1",
+        chartjsAdapterMomentVersion: "1.0.1",
+        volumeChartPercent: 25, // Percentage of chart height for volume (bottom)
     },
 
     getScripts: function() {
+        // Load chart.js from CDN (exactly like MMM-WeatherChart)
+        let chartjsFileName = "chart.min.js";
+        if (Number(this.config.chartjsVersion.split(".")[0]) < 3) {
+            chartjsFileName = "Chart.min.js";
+        }
         return [
-            this.file("node_modules/highcharts/highstock.js"),
+            "https://cdn.jsdelivr.net/npm/chart.js@" +
+                this.config.chartjsVersion +
+                "/dist/" +
+                chartjsFileName,
+            "https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@" +
+                this.config.chartjsAdapterMomentVersion +
+                "/dist/chartjs-adapter-moment.min.js",
+            "https://cdn.jsdelivr.net/npm/chartjs-chart-financial@" +
+                this.config.chartjsFinancialVersion +
+                "/dist/chartjs-chart-financial.min.js"
         ];
     },
 
@@ -65,6 +84,7 @@ Module.register("MMM-AVStock", {
     start: function() {
         this.sendSocketNotification("INIT", this.config);
         this.stocks = {};
+        this.chart = null; // Initialize Chart.js instance tracker
         for (var i = 0; i < this.config.symbols.length; i++) {
             this.stocks[this.config.symbols[i]] = {
                 quotes: {},
@@ -82,6 +102,14 @@ Module.register("MMM-AVStock", {
     notificationReceived: function(noti, payload) {
         if (noti == "DOM_OBJECTS_CREATED") {
             this.log(this.name + " initializing...")
+            
+            // Register Chart.js financial charts if available
+            if (typeof Chart !== 'undefined' && Chart.register) {
+                // Note: Financial chart registration should happen automatically with chartjs-chart-financial
+                // If manual registration is needed, it would be done here
+                this.log("Chart.js loaded successfully");
+            }
+            
             this.sendSocketNotification("GET_STOCKDATA", this.config);
             var self = this;
             setInterval(() => {
@@ -311,10 +339,11 @@ Module.register("MMM-AVStock", {
         if (this.config.showChart) {
             var chartWrapper = document.createElement("div");
             chartWrapper.style.width = (this.config.width == null) ? '100%' : this.config.width + 'px';
-            //chartWrapper.style.height = this.config.height+'px';
+            chartWrapper.style.height = this.config.height + 'px';
 
             var stockChart = document.createElement("div");
             stockChart.id = "AVSTOCK_CHART";
+            stockChart.style.height = this.config.height + 'px';
 
             var head = document.createElement("div");
             head.className = "head anchor";
@@ -545,204 +574,231 @@ Module.register("MMM-AVStock", {
             var changePTag = document.getElementById("stockchart_changeP");
             changePTag.innerHTML = quote.changeP;
 
-            // set the allowed units for data grouping
-            groupingUnits = [[
-                    'day', [1,2,3,4,5,6,7]
-                ], [
-                    'week', [1,2,3,4,5,10,15,20]
-                ], [
-                    'month',[1,2,3,4,6,12]
-                ], [
-                    'year',[1]
-                ]
-            ];
+            // Destroy existing chart if it exists
+            if (this.chart) {
+                this.chart.destroy();
+                this.chart = null;
+            }
 
-            var stockSeries = [
-                {
-                    type: this.config.chartType,
-                    name: symbol,
-                    data: (this.config.chartType != 'line') ?  series.ohlc : series.quotes,
-                    lineColor: this.config.chartLineColor,
-                    yAxis: 0,
-                    dataGrouping: {
-                        units: groupingUnits
-                    }
-                }
-            ];
-            if (this.config.showVolume && !this.config.pureLine) {
-                stockSeries.push({
-                    type: 'column',
-                    name: 'Volume',
-                    data: series.volume,
-                    lineColor: this.config.chartLineColor,
-                    yAxis: 1,
-                    dataGrouping: {
-                        units: groupingUnits
-                    }
-                });
-            };
-            this.log(stockSeries);
+            // Get the canvas element, create if doesn't exist
+            var chartContainer = document.getElementById('AVSTOCK_CHART');
+            var canvas = chartContainer.querySelector('canvas');
+            if (!canvas) {
+                canvas = document.createElement('canvas');
+                chartContainer.appendChild(canvas);
+            }
 
-            // create the chart
-            var stockChart = Highcharts.stockChart('AVSTOCK_CHART', {
-                rangeSelector: {
-                    selected: 1,
-                    enabled: false,
-                    inputEnabled: false
-                },
-
-                chart: {
-                    backgroundColor: '#000',
-                    plotBackgroundColor: '#000',
-                    plotBorderWidth: '0',
-                    zoomType: 'x',
-                    width: this.config.chartWidth,
-                    //margin:[0, Math.round((this.config.width-this.config.chartWidth)/2),0,Math.round((this.config.width-this.config.chartWidth)/2),0]
-                },
-
-                plotOptions: {
-                    candlestick: {
-                        color: (this.config.coloredCandles) ? 'red' : 'none',
-                        upColor: (this.config.coloredCandles) ? 'green' : '#ddd',
-                        clip: false
+            // Format data for Chart.js
+            var chartData = this.formatDataForChartJS(series, symbol);
+            
+            // Create Chart.js configuration
+            var config = {
+                type: this.getChartJSType(),
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    layout: {
+                        padding: 0
                     },
-
-                    ohlc: {
-                        color: (this.config.coloredCandles) ? 'red' : 'none',
-                        upColor: (this.config.coloredCandles) ? 'green' : '#ddd',
-                        clip: false
-                    },
-
-                    column: {
-                        colorByPoint: true,
-                        colors: this.getBarColors(series),
-                        clip: false
-                    }
-                },
-
-                yAxis: [
-                    {
-                        visible: !this.config.pureLine,
-                        labels: {
-                            enabled: !this.config.pureLine,
-                            align: 'right',
-                            lineWidth: 0,
-                            x: -8,
-                            formatter: function () {
-                                return (this.value < 10) ? this.value.toFixed(2) : this.value.toFixed(0);
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                minUnit: 'day',
+                                stepSize: 7,
+                                displayFormats: {
+                                    day: 'MMM DD',
+                                    week: 'MMM DD',
+                                    month: 'MMM YYYY'
+                                }
                             },
-                            style: {
-                                fontSize: '16px',
-                                color: this.config.chartLabelColor
+                            display: !this.config.pureLine,
+                            ticks: {
+                                maxTicksLimit: 4,
+                                color: this.config.chartLabelColor,
+                                font: {
+                                    size: 20,
+                                    family: "inherit"
+                                }
+                            },
+                            grid: {
+                                display: false,
+                                color: this.config.chartLineColor,
+                                lineWidth: 1
+                            },
+                            border: {
+                                display: !this.config.pureLine,
+                                color: this.config.chartLineColor,
+                                width: this.config.pureLine ? 0 : 2
                             }
                         },
-                        title: {
-                            //text: 'OHLC'
-                        },
-                        alternateGridColor: this.config.alternateGridColor,
-                        gridLineDashStyle: 'longDash',
-                        height: (this.config.showVolume && !this.config.pureLine) ? '72%' : '100%',
-                        lineColor: this.config.chartLineColor,
-                        lineWidth: (this.config.pureLine) ? 0 : 2,
-                        gridLineWidth: (this.config.pureLine) ? 0 : 1,
-                        resize: {
-                            enabled: true
+                        y: {
+                            type: 'linear',
+                            position: 'right',
+                            display: !this.config.pureLine,
+                            ticks: {
+                                color: this.config.chartLabelColor,
+                                font: {
+                                    size: 20,
+                                    family: "inherit"
+                                },
+                                callback: function(value) {
+                                    return (value < 10) ? value.toFixed(2) : value.toFixed(0);
+                                }
+                            },
+                            grid: {
+                                display: !this.config.pureLine,
+                                color: this.config.chartLineColor,
+                                lineWidth: this.config.pureLine ? 0 : 1
+                            },
+                            border: {
+                                display: !this.config.pureLine,
+                                color: this.config.chartLineColor,
+                                width: this.config.pureLine ? 0 : 2
+                            }
                         }
                     },
-                    {
-                        visible: !this.config.pureLine,
-                        labels: {
-                            align: 'right',
-                            x: -8,
-                            style: {
-                                fontSize: '14px',
-                                color: this.config.chartLabelColor
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    }
+                }
+            };
+
+            // Add volume scale if volume is shown - create separate subplot effect
+            if (this.config.showVolume && !this.config.pureLine) {
+                // Get price range to calculate separated scales
+                var priceRange = this.getPriceRange(series);
+                var volumeMax = this.getVolumeScaleMax(series.volume);
+                
+                // Calculate the actual price minimum (where real price data starts)
+                var actualPriceMin = priceRange.min;
+                var actualVolumeMax = volumeMax;
+                
+                // Modify the price scale callback to hide labels in volume area
+                config.options.scales.y.ticks.callback = function(value) {
+                    // Hide labels below the actual price range (in volume area)
+                    if (value < actualPriceMin) {
+                        return ''; // Hide labels in volume area
+                    }
+                    return (value < 10) ? value.toFixed(2) : value.toFixed(0);
+                };
+                
+                // Disable built-in grids - we'll draw custom ones
+                config.options.scales.y.grid.display = false;
+                
+                // Configure volume axis for bottom portion of chart
+                config.options.scales.volume = {
+                    type: 'linear',
+                    position: 'right',
+                    display: true,
+                    grid: {
+                        display: false // Custom gridlines will handle this
+                    },
+                    ticks: {
+                        color: '#eee',
+                        font: {
+                            size: 16,
+                            family: "inherit"
+                        },
+                        maxTicksLimit: 20,
+                        callback: function(value) {
+                            // Only show labels for values within actual volume range (bottom portion)
+                            if (value > actualVolumeMax) {
+                                return ''; // Hide labels above actual volume data
                             }
-                        },
+                            
+                            if (value === 0) return '0';
+                            if (value >= 1000000) {
+                                return (value / 1000000).toFixed(1) + 'M';
+                            } else if (value >= 1000) {
+                                return (value / 1000).toFixed(0) + 'K';
+                            }
+                            return Math.round(value).toString();
+                        }
+                    },
+                    border: {
+                        display: false
+                    },
+                    // Scale volume to use only bottom percentage of chart
+                    max: volumeMax / (this.config.volumeChartPercent / 100),
+                    min: 0
+                };
 
-                        title: {
-                            //text: 'Volume'
-                        },
-                        top: (this.config.showVolume && !this.config.pureLine) ? '73%' : '100%',
-                        height: (this.config.showVolume && !this.config.pureLine) ? '27%' : '0%',
-                        offset: 0,
-                        //lineWidth: 2
+                // Add custom gridline plugin
+                if (!config.plugins) config.plugins = [];
+                config.plugins.push({
+                    id: 'customGridlines',
+                    beforeDraw: function(chart) {
+                        const ctx = chart.ctx;
+                        const chartArea = chart.chartArea;
+                        const scales = chart.scales;
+                        
+                        if (!scales.y || !scales.volume) return;
+                        
+                        ctx.save();
+                        ctx.strokeStyle = '#eee';
+                        ctx.lineWidth = 1;
+                        ctx.globalAlpha = 0.3;
+                        
+                        // Draw price gridlines (only in top area where actual prices exist)
+                        if (scales.y.ticks) {
+                            scales.y.ticks.forEach(tick => {
+                                if (tick.value >= actualPriceMin) {
+                                    const y = scales.y.getPixelForValue(tick.value);
+                                    if (y >= chartArea.top && y <= chartArea.bottom) {
+                                        ctx.beginPath();
+                                        ctx.moveTo(chartArea.left, y);
+                                        ctx.lineTo(chartArea.right, y);
+                                        ctx.stroke();
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // Draw volume gridlines (only in bottom area where actual volume exists)
+                        if (scales.volume.ticks) {
+                            scales.volume.ticks.forEach(tick => {
+                                if (tick.value <= actualVolumeMax && tick.value > 0) {
+                                    const y = scales.volume.getPixelForValue(tick.value);
+                                    if (y >= chartArea.top && y <= chartArea.bottom) {
+                                        ctx.beginPath();
+                                        ctx.moveTo(chartArea.left, y);
+                                        ctx.lineTo(chartArea.right, y);
+                                        ctx.stroke();
+                                    }
+                                }
+                            });
+                        }
+                        
+                        ctx.restore();
                     }
-                ],
+                });
 
-                xAxis: [
-                    {
-                        visible: !this.config.pureLine,
-                        type: 'datetime',
-                        labels: {
-                            style: {
-                                fontSize: '16px',
-                                color: this.config.chartLabelColor
-                            },
-                        },
-                        tickPosition: 'none',
-                        endOnTick: (this.config.chartType == 'line'),
-                        startOnTick: (this.config.chartType == 'line'),
-                        units: [
-                            [
-                                'millisecond', // unit name
-                                [1, 2, 5, 10, 20, 25, 50, 100, 200, 500] // allowed multiples
-                            ], [
-                                'second',
-                                [1, 2, 5, 10, 15, 30]
-                            ], [
-                                'minute',
-                                [1, 2, 5, 10, 15, 30]
-                            ], [
-                                'hour',
-                                [1, 2, 3, 4, 6, 8, 12]
-                            ], [
-                                'day',
-                                [1]
-                            ], [
-                                'week',
-                                [1, 2]
-                            ], [
-                                'month',
-                                [1, 3, 6]
-                            ], [
-                                'year',
-                                null
-                        ]]
-                    }
-                ],
+                // Modify price scale to use only top portion of chart
+                var expandedMin = this.config.showVolume
+                    ? priceRange.max - (priceRange.max - priceRange.min) * 100.0 / (100.0 - this.config.volumeChartPercent)
+                    : priceRange.min;
 
-                series: stockSeries,
+                console.log("Price range:", priceRange);
+                console.log("Expanded min:", expandedMin);
+                console.log("Actual price min (for hiding labels):", actualPriceMin);
+                console.log("Actual volume max (for gridlines):", actualVolumeMax);
 
-                /*annotations: [
-                    {
-                        labels: [{
-                            point: 'max',
-                            text: 'Max'
-                        }, {
-                            point: 'min',
-                            text: 'Min',
-                        }]
-                    }
-                ],*/
+                config.options.scales.y.suggestedMin = expandedMin;
+                config.options.scales.y.suggestedMax = priceRange.max;
+                config.options.scales.y.position = 'left';
+            }
 
-                tooltip: {
-                    split: true
-                },
+            // Create the chart
+            this.chart = new Chart(canvas, config);
 
-                exporting: {
-                    enabled: false,
-                },
-                navigator: {
-                    enabled: this.config.chartNavigator,
-                },
-                scrollbar: {
-                    enabled: false,
-                },
-                credits: {
-                    enabled: false,
-                },
-            });
             var tl = document.getElementById("AVSTOCK_TAGLINE");
             tl.innerHTML = "Last quote: " + moment(quote.requestTime, "x").format("MM-DD HH:mm");
         } else {
@@ -750,15 +806,146 @@ Module.register("MMM-AVStock", {
         }
     },
 
-
-    getBarColors: function (series) {
-        var colors = [];
-        var upColor = (this.config.coloredCandles) ? 'green' : this.config.chartLineColor;
-        var downColor = (this.config.coloredCandles) ? 'red' : 'none';
-        for (var i = 0; i < series.ohlc.length; i++) {
-            colors.push(((series.ohlc[i][4] - series.ohlc[i][1]) > 0) ? upColor : downColor)
+    // Convert chart type from Highcharts to Chart.js financial types
+    getChartJSType: function() {
+        switch(this.config.chartType) {
+            case 'candlestick':
+                return 'candlestick';
+            case 'ohlc':
+                return 'ohlc';
+            case 'line':
+            default:
+                return 'line';
         }
-        return colors;
+    },
+
+    // Format data for Chart.js financial charts
+    formatDataForChartJS: function(series, symbol) {
+        var datasets = [];
+        
+        if (this.config.chartType === 'line') {
+            // Line chart data format
+            var lineData = series.quotes.map(function(point) {
+                return {
+                    x: point[0], // timestamp
+                    y: point[1]  // close price
+                };
+            });
+            
+            datasets.push({
+                label: symbol,
+                data: lineData,
+                borderColors: { up: "green", down: "red", unchanged: this.config.chartLineColor },
+                borderColor: this.config.chartLineColor,
+                backgroundColor: 'transparent',
+                borderWidth: 5,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                tension: 0.1,
+                fill: false
+            });
+        } else {
+            // Financial chart data format (OHLC/Candlestick)
+            var financialData = series.ohlc.map(function(point) {
+                return {
+                    x: point[0], // timestamp
+                    o: point[1], // open
+                    h: point[2], // high  
+                    l: point[3], // low
+                    c: point[4]  // close
+                };
+            });
+
+            var upColor = this.config.coloredCandles ? 'rgba(0, 255, 0, 1.0)' : this.config.chartLineColor;
+            var downColor = this.config.coloredCandles ? 'rgba(255, 0, 0, 1.0)' : this.config.chartLineColor;
+
+            datasets.push({
+                label: symbol,
+                data: financialData,
+                type: this.getChartJSType(),
+                borderColors: {
+                    up: upColor,
+                    down: downColor,
+                    unchanged: this.config.chartLineColor
+                },
+                backgroundColor: {
+                    up: upColor,
+                    down: downColor,
+                    unchanged: this.config.chartLineColor
+                }
+            });
+        }
+
+        // Add volume dataset if enabled
+        if (this.config.showVolume && !this.config.pureLine) {
+            var volumeData = series.volume.map(function(point) {
+                return {
+                    x: point[0], // timestamp
+                    y: point[1]  // volume
+                };
+            });
+
+            datasets.push({
+                label: 'Volume',
+                data: volumeData,
+                type: 'bar',
+                backgroundColor: 'rgba(70, 130, 180, 1.0)', 
+                borderColor: 'rgba(70, 130, 180, 1.0)',
+                borderWidth: 0.5,
+                yAxisID: 'volume',
+                order: 2, // Render behind main chart
+                barPercentage: 1.0, // Make bars fill available width
+                categoryPercentage: 0.95,
+                // Configure bars to appear in bottom area
+                skipNull: true
+            });
+        }
+
+        return {
+            datasets: datasets
+        };
+    },
+
+    // Calculate appropriate max value for volume scale
+    getVolumeScaleMax: function(volumeData) {
+        if (!volumeData || volumeData.length === 0) return 1000000;
+        var maxVolume = Math.max(...volumeData.map(v => v[1]));
+        console.log("Volume data max:", maxVolume, "Sample volumes:", volumeData.slice(0, 3).map(v => v[1]));
+        // Add 20% padding above max volume instead of 4x multiplier
+        return maxVolume * 1.2;
+    },
+
+    // Calculate price range from OHLC or line data
+    getPriceRange: function(series) {
+        var prices = [];
+        
+        if (this.config.chartType === 'line' && series.quotes) {
+            // For line charts, use close prices
+            prices = series.quotes.map(function(point) {
+                return point[1]; // close price
+            });
+        } else if (series.ohlc) {
+            // For OHLC charts, use high and low values
+            series.ohlc.forEach(function(point) {
+                prices.push(point[2]); // high
+                prices.push(point[3]); // low
+            });
+        }
+        
+        if (prices.length === 0) {
+            return { min: 0, max: 100 };
+        }
+        
+        var min = Math.min(...prices);
+        var max = Math.max(...prices);
+        
+        // Add small padding to price range
+        var padding = (max - min) * 0.02;
+        
+        return {
+            min: min - padding,
+            max: max + padding
+        };
     },
 
 

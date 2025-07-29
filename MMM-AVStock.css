@@ -177,6 +177,16 @@
   justify-content: flex-start;  
 }
 
+#AVSTOCK #AVSTOCK_CHART {
+  position: relative;
+  width: 100%;
+}
+
+#AVSTOCK #AVSTOCK_CHART canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
 /***** ALL *****/
 
 #AVSTOCK * {
