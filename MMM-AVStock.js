@@ -872,6 +872,9 @@ Module.register("MMM-AVStock", {
                     up: upColor,
                     down: downColor,
                     unchanged: this.config.chartLineColor
+                },
+                datalabels: {
+                    display: false,
                 }
             });
         }
@@ -894,10 +897,13 @@ Module.register("MMM-AVStock", {
                 borderWidth: 0.5,
                 yAxisID: 'volume',
                 order: 2, // Render behind main chart
-                barPercentage: 1.0, // Make bars fill available width
+                barPercentage: 0.95, 
                 categoryPercentage: 0.95,
                 // Configure bars to appear in bottom area
-                skipNull: true
+                skipNull: true,
+                datalabels: {
+                    display: false,
+                }
             });
         }
 
