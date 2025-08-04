@@ -85,6 +85,9 @@ Module.register("MMM-AVStock", {
         this.sendSocketNotification("INIT", this.config);
         this.stocks = {};
         this.chart = null; // Initialize Chart.js instance tracker
+        this.chartChanger = null; // Chart rotation interval
+        this.chartCount = 0; // Current chart index
+        this.isVisible = true; // Track module visibility
         for (var i = 0; i < this.config.symbols.length; i++) {
             this.stocks[this.config.symbols[i]] = {
                 quotes: {},
@@ -120,12 +123,93 @@ Module.register("MMM-AVStock", {
         }
     },
 
+    // MagicMirror's built-in suspend/resume methods for when module is not displayed
+    suspend: function() {
+        this.log(this.name + " is suspended");
+        this.pauseChartChanger();
+    },
+
+    resume: function() {
+        this.log(this.name + " is resumed");
+        if (this.isVisible) {
+            this.resumeChartChanger();
+        }
+    },
+
+    // MagicMirror's built-in show/hide methods for MMM-pages integration
+    show: function(speed, callback) {
+        this.log(this.name + " is being shown");
+        this.isVisible = true;
+        
+        // Call the parent show method
+        if (Module.prototype.show) {
+            Module.prototype.show.call(this, speed, callback);
+        }
+        
+        // Update the current chart if data is loaded
+        if (this.loaded && this.config.showChart && this.config.symbols.length > 0) {
+            this.updateChart(this.config.symbols[this.chartCount]);
+        }
+        this.resumeChartChanger();
+    },
+
+    hide: function(speed, callback) {
+        this.log(this.name + " is being hidden");
+        this.isVisible = false;
+        this.pauseChartChanger();
+        
+        // Call the parent hide method
+        if (Module.prototype.hide) {
+            Module.prototype.hide.call(this, speed, callback);
+        }
+    },
+
 
     getStockName: function(symbol) {
         var stockAlias = symbol;
         var i = this.config.symbols.indexOf(symbol);
         stockAlias = (this.config.alias[i]) ? this.config.alias[i] : stockAlias;
         return stockAlias;
+    },
+
+    pauseChartChanger: function() {
+        if (this.chartChanger) {
+            this.log("Pausing chart changer");
+            clearInterval(this.chartChanger);
+            this.chartChanger = null;
+            // try this out:  increment the chart index when it is hidden, so the next time it is shown, it will show the next chart
+            this.chartCount = (this.chartCount === this.config.symbols.length - 1) ? 0 : this.chartCount + 1;
+            this.log("Count: " + this.chartCount);
+        }
+    },
+
+    resumeChartChanger: function() {
+        // Only resume if module is loaded, visible, charts are enabled, and chartChanger is not already running
+        if (this.loaded && this.isVisible && this.config.showChart && !this.chartChanger && this.config.symbols.length > 1) {
+            this.log("Resuming chart changer");
+            var self = this;
+            this.chartChanger = setInterval(function() {
+                self.chartCount = (self.chartCount === self.config.symbols.length - 1) ? 0 : self.chartCount + 1;
+                self.log("Count: " + self.chartCount);
+                self.updateChart(self.config.symbols[self.chartCount]);
+            }, self.config.chartUpdateInterval);
+        }
+    },
+
+    startChartChanger: function() {
+        // Only start chart changer if charts are enabled, there's more than one symbol, and module is visible
+        if (this.config.showChart && this.config.symbols.length > 1) {
+            this.chartCount = 0;
+            this.updateChart(this.config.symbols[this.chartCount]);
+            // Only start the interval if module is visible
+            if (this.isVisible) {
+                this.resumeChartChanger();
+            }
+        } else if (this.config.showChart && this.config.symbols.length === 1) {
+            // If only one symbol, just show its chart without rotation
+            this.chartCount = 0;
+            this.updateChart(this.config.symbols[this.chartCount]);
+        }
     },
 
 
@@ -317,7 +401,17 @@ Module.register("MMM-AVStock", {
             if (this.config.showChart) {
                 item.addEventListener("click", function() {
                     self.log("Clicked on " + self.config.symbols[i]);
+                    // Pause automatic chart changing when user manually selects a chart
+                    self.pauseChartChanger();
+                    // Update the chart count to match the clicked symbol
+                    self.chartCount = i;
                     self.updateChart(self.config.symbols[i]);
+                    // Resume automatic chart changing after a delay
+                    setTimeout(function() {
+                        if (self.isVisible) {
+                            self.resumeChartChanger();
+                        }
+                    }, self.config.chartUpdateInterval * 2); // Wait 2 cycles before resuming
                 });
             };
             elWrapper.appendChild(item);
@@ -458,14 +552,7 @@ Module.register("MMM-AVStock", {
             if (!this.loaded) { 
                 this.loaded = true;
                 this.log(this.name + " fully loaded...")
-                var self = this;
-                var count = 0;
-                self.updateChart(self.config.symbols[count]);
-                this.chartChanger = setInterval( function () {
-                    count = (count === self.config.symbols.length-1) ? 0 : count + 1;
-                    self.log("Count: " + count);
-                    self.updateChart(self.config.symbols[count]);
-                }, self.config.chartUpdateInterval);
+                this.startChartChanger();
             }
         }
         this.log("Stocks updated.");
